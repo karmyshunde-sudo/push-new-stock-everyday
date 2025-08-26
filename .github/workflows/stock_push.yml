@@ -1,25 +1,27 @@
-name: 每天9点36分推送新股申购信息
+name: 新股信息推送任务
 
 on:
   schedule:
-    # 每个交易日 9:36 爬取并推送（UTC 1:36 = 北京时间 9:36）
+    # 每个交易日 9:36 爬取并推送当天数据（UTC 1:36 = 北京时间 9:36）
     - cron: '36 1 * * 1-5'
 
-  # 允许手动触发
+  # 允许手动触发（支持测试模式）
   workflow_dispatch:
     inputs:
       task:
-        description: '选择要执行的任务'
+        description: '选择任务类型'
         required: true
         type: choice
         options:
-          - 'push_new_stock'  # 推送新股申购和新上市股票信息  
-          - 'test_message'    # 发送测试消息
+          - 'push_new_stock'  # 正常推送（仅当天数据）
+          - 'test_push'       # 测试推送（无数据则回溯21天）
 
 jobs:
   run_task:
-    # 条件：允许定时任务触发，或手动选择对应任务时触发
-    if: ${{ (github.event_name == 'schedule') || (github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'push_new_stock') || (github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'test_message') }}
+    # 条件：定时任务或手动选择对应任务时触发
+    if: ${{ (github.event_name == 'schedule') || 
+            (github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'push_new_stock') || 
+            (github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'test_push') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -51,7 +53,10 @@ jobs:
       
       - name: Run task
         env:
+          # 传递任务类型
           TASK: ${{ github.event.inputs.task || 'push_new_stock' }}
+          # 传递测试模式标记（关键：手动测试时为true）
+          TEST_MODE: ${{ github.event.inputs.task == 'test_push' }}
           WECOM_WEBHOOK: ${{ secrets.WECOM_WEBHOOK }}
         run: |
           python main.py
@@ -60,7 +65,7 @@ jobs:
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
           git add data/
-          git commit -m "定时任务：更新新股信息 $(date +'%Y-%m-%d %H:%M')" || echo "无新股信息更新"
+          git commit -m "任务更新: $(date +'%Y-%m-%d %H:%M')" || echo "无数据更新"
           git push origin main || echo "推送变更失败"
 
       - name: Task completed

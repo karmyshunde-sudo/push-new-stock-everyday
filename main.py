@@ -12,8 +12,7 @@ from stock_data import (
     mark_new_stock_info_pushed,
     read_listing_pushed_flag,
     mark_listing_info_pushed,
-    get_beijing_time,
-    is_trading_day
+    get_beijing_time
 )
 
 # 初始化日志
@@ -26,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 # -------------------------
-# 时间判断工具函数
+# 时间判断工具函数（仅保留时间检查）
 # -------------------------
 def is_in_trading_hours():
     """判断是否在交易时段（9:30-15:00）"""
@@ -39,7 +38,7 @@ def is_1430_deadline():
     """判断当前是否是14:30最终检查点"""
     now = get_beijing_time()
     current_time = now.time()
-    # 匹配14:30（允许±1分钟误差，避免定时器毫秒级偏差）
+    # 允许±1分钟误差
     return time(14, 29) <= current_time <= time(14, 31)
 
 
@@ -152,7 +151,7 @@ def push_listing_info(test_mode=False):
 
 
 # -------------------------
-# 主入口（含14:30强制提醒）
+# 主入口（移除交易日判断）
 # -------------------------
 def main():
     task_type = os.getenv("TASK", "push_new_stock")
@@ -163,27 +162,22 @@ def main():
     logger.info(f"===== 任务开始 =====")
     logger.info(f"当前时间: {now.strftime('%Y-%m-%d %H:%M:%S')}（北京时间）")
     logger.info(f"任务类型: {task_type} | 测试模式: {test_mode}")
-    logger.info(f"是否交易日: {is_trading_day()} | 是否14:30检查点: {is_1430_deadline()}")
+    logger.info(f"是否交易时段: {is_in_trading_hours()} | 是否14:30检查点: {is_1430_deadline()}")
     logger.info(f"====================")
 
-    # 非测试模式且非交易日 → 直接跳过
-    if not test_mode and not is_trading_day():
-        logger.info("今日非交易日，无需推送")
-        return {"status": "skipped", "reason": "Not a trading day"}
-
-    # 执行推送
+    # 执行推送（不再判断是否为交易日）
     stock_success = push_new_stock_info(test_mode=test_mode)
     listing_success = push_listing_info(test_mode=test_mode)
 
     # 14:30最终检查：若仍失败则发送强制提醒
     if not test_mode and is_1430_deadline():
-        # 检查是否仍未推送成功（标记文件是否存在）
+        # 检查是否仍未推送成功
         _, stock_pushed = read_new_stock_pushed_flag(today)
         _, listing_pushed = read_listing_pushed_flag(today)
         
         if not stock_pushed or not listing_pushed:
             logger.warning("14:30最终检查：仍有信息未推送成功，发送强制提醒")
-            send_force_alert()  # 强制发送提醒
+            send_force_alert()
 
     # 输出结果
     response = {

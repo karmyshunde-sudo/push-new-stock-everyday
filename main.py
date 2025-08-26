@@ -3,7 +3,8 @@ import sys
 import json
 import logging
 import requests
-from config import Config  # 导入配置类
+from datetime import time
+from config import Config
 from stock_data import (
     get_new_stock_subscriptions,
     get_new_stock_listings,
@@ -15,7 +16,7 @@ from stock_data import (
     is_trading_day
 )
 
-# 初始化日志（使用配置类中的日志设置）
+# 初始化日志
 logging.basicConfig(
     level=getattr(logging, Config.LOG_LEVEL, logging.INFO),
     format=Config.LOG_FORMAT,
@@ -25,65 +26,58 @@ logger = logging.getLogger(__name__)
 
 
 # -------------------------
-# 企业微信消息推送（含固定末尾）
+# 时间判断工具函数
+# -------------------------
+def is_in_trading_hours():
+    """判断是否在交易时段（9:30-15:00）"""
+    now = get_beijing_time()
+    current_time = now.time()
+    return time(9, 30) <= current_time <= time(15, 0)
+
+
+def is_1430_deadline():
+    """判断当前是否是14:30最终检查点"""
+    now = get_beijing_time()
+    current_time = now.time()
+    # 匹配14:30（允许±1分钟误差，避免定时器毫秒级偏差）
+    return time(14, 29) <= current_time <= time(14, 31)
+
+
+# -------------------------
+# 消息推送函数
 # -------------------------
 def send_wecom_message(message):
-    """
-    发送文本消息到企业微信机器人，自动添加配置中的固定末尾
-    :param message: 消息内容（str）
-    :return: bool（True=发送成功，False=发送失败）
-    """
-    # 优先使用环境变量中的Webhook，其次使用配置文件中的默认值
+    """发送消息（自动添加末尾）"""
     wecom_webhook = os.getenv("WECOM_WEBHOOK", Config.WECOM_WEBHOOK)
     if not wecom_webhook:
-        logger.error("企业微信Webhook未配置！请在GitHub Secrets中添加WECOM_WEBHOOK")
+        logger.error("企业微信Webhook未配置！")
         return False
 
     try:
-        # 在消息末尾添加固定内容（用两个换行分隔主内容和末尾）
         message_with_footer = f"{message}\n\n{Config.WECOM_MESFOOTER}"
-        
-        # 企业微信机器人文本消息格式
-        payload = {
-            "msgtype": "text",
-            "text": {
-                "content": message_with_footer,
-                "mentioned_list": [],  # 可添加@的人（如["@all"]）
-                "mentioned_mobile_list": []
-            }
-        }
-
-        # 发送POST请求
-        response = requests.post(
-            url=wecom_webhook,
-            json=payload,
-            headers={"Content-Type": "application/json"}
-        )
-        response.raise_for_status()  # 触发HTTP错误（如404、500）
-
-        # 解析响应（企业微信返回errcode=0表示成功）
-        result = response.json()
-        if result.get("errcode") == 0:
-            logger.info("企业微信消息发送成功")
-            return True
-        else:
-            logger.error(f"企业微信消息发送失败: {result.get('errmsg')}（errcode: {result.get('errcode')}）")
-            return False
-
+        payload = {"msgtype": "text", "text": {"content": message_with_footer}}
+        response = requests.post(wecom_webhook, json=payload)
+        response.raise_for_status()
+        return response.json().get("errcode") == 0
     except Exception as e:
-        logger.error(f"发送企业微信消息异常: {str(e)}", exc_info=True)
+        logger.error(f"消息发送失败: {str(e)}")
         return False
 
 
+def send_force_alert():
+    """14:30最终失败时发送强制提醒"""
+    alert_msg = (
+        "【紧急提醒】\n"
+        "今天获取新股消息失败，可能存在未抓取到的新股申购信息！\n"
+        "请尽快手动查看，避免错失申购机会！"
+    )
+    return send_wecom_message(alert_msg)
+
+
 # -------------------------
-# 消息格式化（美观易读）
+# 消息格式化
 # -------------------------
 def format_new_stock_subscriptions_message(new_stocks_df):
-    """
-    格式化新股申购信息为文本
-    :param new_stocks_df: 新股数据DataFrame
-    :return: 格式化后的消息（str）
-    """
     if new_stocks_df is None or new_stocks_df.empty:
         return "【今日新股申购信息】\n今天没有可申购的新股哦～"
 
@@ -95,13 +89,11 @@ def format_new_stock_subscriptions_message(new_stocks_df):
    • 申购上限：{stock['申购上限']}
    • 申购日期：{stock['申购日期']}
 """
-    # 补充提示（可选）
     message += "\n温馨提示：请确认申购资格后操作，投资有风险～"
     return message
 
 
 def format_new_stock_listings_message(new_listings_df):
-    """格式化新上市股票信息为文本"""
     if new_listings_df is None or new_listings_df.empty:
         return "【今日新上市股票信息】\n今天没有新上市的股票哦～"
 
@@ -117,121 +109,93 @@ def format_new_stock_listings_message(new_listings_df):
 
 
 # -------------------------
-# 推送逻辑（核心业务）
+# 核心推送逻辑
 # -------------------------
 def push_new_stock_info(test_mode=False):
-    """
-    推送新股申购信息（含防重复推送）
-    :param test_mode: 是否测试模式（bool）
-    :return: bool（True=推送成功/已推送，False=推送失败）
-    """
-    # 非测试模式：检查是否已推送（避免重复）
-    if not test_mode:
-        today = get_beijing_time().date()
-        flag_file, is_pushed = read_new_stock_pushed_flag(today)
-        if is_pushed:
-            logger.info(f"新股申购信息今日已推送（标记文件：{flag_file}），跳过本次推送")
-            return True
+    """推送新股申购信息（返回是否成功）"""
+    today = get_beijing_time().date()
+    _, is_pushed = read_new_stock_pushed_flag(today)
 
-    # 获取新股数据
-    new_stocks_df = get_new_stock_subscriptions(test_mode=test_mode)
-    # 格式化消息（测试模式加前缀）
-    if test_mode:
-        message = "[测试消息] " + format_new_stock_subscriptions_message(new_stocks_df)
+    if test_mode or not is_pushed:
+        logger.info(f"{'[测试]' if test_mode else ''} 开始爬取新股申购信息")
+        new_stocks_df = get_new_stock_subscriptions(test_mode=test_mode)
+        message = "[测试消息] " + format_new_stock_subscriptions_message(new_stocks_df) if test_mode else format_new_stock_subscriptions_message(new_stocks_df)
+        send_success = send_wecom_message(message)
+        
+        if send_success and not test_mode:
+            mark_new_stock_info_pushed()
+            logger.info("新股信息推送成功并标记")
+        return send_success
     else:
-        message = format_new_stock_subscriptions_message(new_stocks_df)
-
-    # 发送消息（自动添加固定末尾）
-    send_success = send_wecom_message(message)
-    # 非测试模式：推送成功后标记
-    if send_success and not test_mode:
-        mark_new_stock_info_pushed()
-
-    return send_success
+        logger.info("新股信息今日已推送，跳过")
+        return True  # 已推送视为成功
 
 
 def push_listing_info(test_mode=False):
-    """推送新上市股票信息（含防重复推送）"""
-    if not test_mode:
-        today = get_beijing_time().date()
-        flag_file, is_pushed = read_listing_pushed_flag(today)
-        if is_pushed:
-            logger.info(f"新上市股票信息今日已推送（标记文件：{flag_file}），跳过本次推送")
-            return True
+    """推送新上市信息（返回是否成功）"""
+    today = get_beijing_time().date()
+    _, is_pushed = read_listing_pushed_flag(today)
 
-    new_listings_df = get_new_stock_listings(test_mode=test_mode)
-    if test_mode:
-        message = "[测试消息] " + format_new_stock_listings_message(new_listings_df)
+    if test_mode or not is_pushed:
+        logger.info(f"{'[测试]' if test_mode else ''} 开始爬取新上市信息")
+        new_listings_df = get_new_stock_listings(test_mode=test_mode)
+        message = "[测试消息] " + format_new_stock_listings_message(new_listings_df) if test_mode else format_new_stock_listings_message(new_listings_df)
+        send_success = send_wecom_message(message)
+        
+        if send_success and not test_mode:
+            mark_listing_info_pushed()
+            logger.info("新上市信息推送成功并标记")
+        return send_success
     else:
-        message = format_new_stock_listings_message(new_listings_df)
-
-    # 发送消息（自动添加固定末尾）
-    send_success = send_wecom_message(message)
-    if send_success and not test_mode:
-        mark_listing_info_pushed()
-
-    return send_success
+        logger.info("新上市信息今日已推送，跳过")
+        return True  # 已推送视为成功
 
 
 # -------------------------
-# 主入口（任务调度）
+# 主入口（含14:30强制提醒）
 # -------------------------
 def main():
-    """主函数：根据环境变量执行对应任务"""
-    # 从环境变量获取配置（由GitHub Actions传递）
-    task_type = os.getenv("TASK", "push_new_stock")  # 任务类型
-    test_mode = os.getenv("TEST_MODE", "false").lower() == "true"  # 测试模式标记
+    task_type = os.getenv("TASK", "push_new_stock")
+    test_mode = os.getenv("TEST_MODE", "false").lower() == "true"
+    now = get_beijing_time()
+    today = now.date()
 
     logger.info(f"===== 任务开始 =====")
+    logger.info(f"当前时间: {now.strftime('%Y-%m-%d %H:%M:%S')}（北京时间）")
     logger.info(f"任务类型: {task_type} | 测试模式: {test_mode}")
-    logger.info(f"当前北京时间: {get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"是否交易日: {is_trading_day()} | 是否14:30检查点: {is_1430_deadline()}")
     logger.info(f"====================")
 
-    # 执行对应任务
-    if task_type in ["push_new_stock", "test_push"]:
-        # 非测试模式：先判断是否为交易日
-        if not test_mode and not is_trading_day():
-            logger.info("今日非交易日，跳过新股信息推送")
-            response = {
-                "status": "skipped",
-                "reason": "Not a trading day",
-                "test_mode": test_mode,
-                "timestamp": get_beijing_time().strftime("%Y-%m-%d %H:%M:%S")
-            }
-            print(json.dumps(response, ensure_ascii=False, indent=2))
-            return response
+    # 非测试模式且非交易日 → 直接跳过
+    if not test_mode and not is_trading_day():
+        logger.info("今日非交易日，无需推送")
+        return {"status": "skipped", "reason": "Not a trading day"}
 
-        # 推送新股申购+新上市信息
-        stock_push_success = push_new_stock_info(test_mode=test_mode)
-        listing_push_success = push_listing_info(test_mode=test_mode)
+    # 执行推送
+    stock_success = push_new_stock_info(test_mode=test_mode)
+    listing_success = push_listing_info(test_mode=test_mode)
 
-        # 生成结果响应
-        overall_status = "success" if stock_push_success and listing_push_success else "partial_success"
-        response = {
-            "status": overall_status,
-            "details": {
-                "new_stock_push": "success" if stock_push_success else "failed",
-                "listing_push": "success" if listing_push_success else "failed"
-            },
-            "test_mode": test_mode,
-            "timestamp": get_beijing_time().strftime("%Y-%m-%d %H:%M:%S")
-        }
-        logger.info(f"任务执行完成，结果: {overall_status}")
-        print(json.dumps(response, ensure_ascii=False, indent=2))
-        return response
+    # 14:30最终检查：若仍失败则发送强制提醒
+    if not test_mode and is_1430_deadline():
+        # 检查是否仍未推送成功（标记文件是否存在）
+        _, stock_pushed = read_new_stock_pushed_flag(today)
+        _, listing_pushed = read_listing_pushed_flag(today)
+        
+        if not stock_pushed or not listing_pushed:
+            logger.warning("14:30最终检查：仍有信息未推送成功，发送强制提醒")
+            send_force_alert()  # 强制发送提醒
 
-    # 未知任务类型
-    else:
-        error_msg = f"未知任务类型: {task_type}（支持的类型：push_new_stock, test_push）"
-        logger.error(error_msg)
-        send_wecom_message(f"【系统错误】{error_msg}")  # 错误消息也会添加固定末尾
-        response = {
-            "status": "error",
-            "message": error_msg,
-            "timestamp": get_beijing_time().strftime("%Y-%m-%d %H:%M:%S")
-        }
-        print(json.dumps(response, ensure_ascii=False, indent=2))
-        return response
+    # 输出结果
+    response = {
+        "status": "success" if stock_success and listing_success else "partial_success",
+        "details": {
+            "new_stock": "success" if stock_success else "failed",
+            "listing": "success" if listing_success else "failed"
+        },
+        "timestamp": now.strftime("%Y-%m-%d %H:%M:%S")
+    }
+    print(json.dumps(response, indent=2, ensure_ascii=False))
+    return response
 
 
 if __name__ == "__main__":

@@ -1,11 +1,19 @@
-name: 新股信息定时推送任务
+name: 新股信息推送任务（含强制提醒）
 
 on:
   schedule:
-    # 交易日北京时间9:36触发（UTC+8，对应UTC 1:36）
-    - cron: '36 1 * * 1-5'
+    # 初始推送：交易日9:36
+    - cron: '36 1 * * 1-5'  # UTC 1:36 = 北京时间9:36
+    
+    # 交易时段检查点（北京时间）
+    - cron: '0 2 * * 1-5'   # 10:00（UTC 2:00）
+    - cron: '0 3 * * 1-5'   # 11:00（UTC 3:00）
+    - cron: '0 4 * * 1-5'   # 12:00（UTC 4:00）
+    - cron: '0 5 * * 1-5'   # 13:00（UTC 5:00）
+    - cron: '0 6 * * 1-5'   # 14:00（UTC 6:00）
+    - cron: '30 6 * * 1-5'  # 14:30（UTC 6:30，最终检查点）
 
-  # 手动触发（支持正常推送/测试推送）
+  # 手动触发
   workflow_dispatch:
     inputs:
       task:
@@ -13,71 +21,59 @@ on:
         required: true
         type: choice
         options:
-          - 'push_new_stock'  # 正常推送（仅当天数据，非交易日跳过）
-          - 'test_push'       # 测试推送（无数据回溯21天，忽略交易日判断）
+          - 'push_new_stock'  # 正常推送
+          - 'test_push'       # 测试推送
+
 
 jobs:
-  run_stock_task:
-    # 触发条件：定时任务 或 手动选择对应任务
-    if: ${{ (github.event_name == 'schedule') || (github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'push_new_stock') || (github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'test_push') }}
+  run_task:
+    if: ${{ 
+      (github.event_name == 'schedule') || 
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'push_new_stock') || 
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'test_push') 
+    }}
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # 用于提交推送标记文件到仓库
-
+      contents: write
+      
     steps:
       - name: 拉取仓库代码
         uses: actions/checkout@v4
         with:
           ref: main
-          fetch-depth: 0  # 拉取完整历史（避免git push失败）
-
+          fetch-depth: 0
+      
       - name: 配置Python环境
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10'  # 稳定兼容版本
-          cache: 'pip'            # 缓存依赖，加速安装
-
-      - name: 安装依赖包
+          python-version: '3.10'
+          cache: 'pip'
+          
+      - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-
-      - name: 输出调试信息（方便排查问题）
+      
+      - name: 调试信息
         run: |
-          echo "===== 调试信息 ====="
-          echo "事件类型: ${{ github.event_name }}"
+          echo "当前北京时间: $(date -u -d "+8 hours" '+%Y-%m-%d %H:%M')"
           echo "定时表达式: ${{ github.event.schedule || '无' }}"
-          echo "手动选择任务: ${{ github.event.inputs.task || '无' }}"
-          echo "当前UTC时间: $(date '+%Y-%m-%d %H:%M:%S')"
-          echo "当前北京时间: $(date -u -d "+8 hours" '+%Y-%m-%d %H:%M:%S')"
-          echo "测试模式标记: ${{ github.event.inputs.task == 'test_push' }}"
-          echo "===================="
-
-      - name: 执行爬取推送任务
+          echo "任务类型: ${{ github.event.inputs.task || 'push_new_stock' }}"
+      
+      - name: 执行任务（含14:30强制提醒）
         env:
-          # 传递任务类型（定时任务默认push_new_stock）
           TASK: ${{ github.event.inputs.task || 'push_new_stock' }}
-          # 传递测试模式标记（true=测试回溯，false=正常模式）
           TEST_MODE: ${{ github.event.inputs.task == 'test_push' }}
-          # 企业微信Webhook（从GitHub Secrets获取，避免硬编码）
           WECOM_WEBHOOK: ${{ secrets.WECOM_WEBHOOK }}
         run: |
           python main.py
+          
+          # 提交状态标记
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add data/flags/
+          git commit -m "更新状态: $(date +'%Y-%m-%d %H:%M')" || echo "无更新"
+          git push origin main || echo "推送标记失败"
 
-      - name: 提交推送标记文件（避免重复推送）
-        run: |
-          git config --global user.name "GitHub Actions"
-          git config --global user.email "actions@github.com"
-          # 检查是否有数据变更
-          if git status | grep -q "data/flags/"; then
-            git add data/flags/
-            git commit -m "添加推送标记: $(date +'%Y-%m-%d %H:%M:%S')"
-            git push origin main
-            echo "推送标记已提交到仓库"
-          else
-            echo "无新的推送标记需要提交"
-          fi
-
-      - name: 任务执行完成
-        run: |
-          echo "任务执行结束！"
+      - name: 任务完成
+        run: echo "执行结束"

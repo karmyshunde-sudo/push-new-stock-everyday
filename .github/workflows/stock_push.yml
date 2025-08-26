@@ -19,11 +19,7 @@ on:
 jobs:
   run_stock_task:
     # 触发条件：定时任务 或 手动选择对应任务
-    if: ${{ 
-      (github.event_name == 'schedule') || 
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'push_new_stock') || 
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'test_push') 
-    }}
+    if: ${{ (github.event_name == 'schedule') || (github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'push_new_stock') || (github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'test_push') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write  # 用于提交推送标记文件到仓库

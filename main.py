@@ -3,6 +3,7 @@ import sys
 import json
 import logging
 import requests
+from config import Config  # 导入配置类
 from stock_data import (
     get_new_stock_subscriptions,
     get_new_stock_listings,
@@ -14,36 +15,39 @@ from stock_data import (
     is_trading_day
 )
 
-# 初始化日志
+# 初始化日志（使用配置类中的日志设置）
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
+    level=getattr(logging, Config.LOG_LEVEL, logging.INFO),
+    format=Config.LOG_FORMAT,
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 logger = logging.getLogger(__name__)
 
 
 # -------------------------
-# 企业微信消息推送
+# 企业微信消息推送（含固定末尾）
 # -------------------------
 def send_wecom_message(message):
     """
-    发送文本消息到企业微信机器人
+    发送文本消息到企业微信机器人，自动添加配置中的固定末尾
     :param message: 消息内容（str）
     :return: bool（True=发送成功，False=发送失败）
     """
-    # 从环境变量获取Webhook（避免硬编码）
-    wecom_webhook = os.getenv("WECOM_WEBHOOK")
+    # 优先使用环境变量中的Webhook，其次使用配置文件中的默认值
+    wecom_webhook = os.getenv("WECOM_WEBHOOK", Config.WECOM_WEBHOOK)
     if not wecom_webhook:
         logger.error("企业微信Webhook未配置！请在GitHub Secrets中添加WECOM_WEBHOOK")
         return False
 
     try:
+        # 在消息末尾添加固定内容（用两个换行分隔主内容和末尾）
+        message_with_footer = f"{message}\n\n{Config.WECOM_MESFOOTER}"
+        
         # 企业微信机器人文本消息格式
         payload = {
             "msgtype": "text",
             "text": {
-                "content": message,
+                "content": message_with_footer,
                 "mentioned_list": [],  # 可添加@的人（如["@all"]）
                 "mentioned_mobile_list": []
             }
@@ -137,7 +141,7 @@ def push_new_stock_info(test_mode=False):
     else:
         message = format_new_stock_subscriptions_message(new_stocks_df)
 
-    # 发送消息
+    # 发送消息（自动添加固定末尾）
     send_success = send_wecom_message(message)
     # 非测试模式：推送成功后标记
     if send_success and not test_mode:
@@ -161,6 +165,7 @@ def push_listing_info(test_mode=False):
     else:
         message = format_new_stock_listings_message(new_listings_df)
 
+    # 发送消息（自动添加固定末尾）
     send_success = send_wecom_message(message)
     if send_success and not test_mode:
         mark_listing_info_pushed()
@@ -219,7 +224,7 @@ def main():
     else:
         error_msg = f"未知任务类型: {task_type}（支持的类型：push_new_stock, test_push）"
         logger.error(error_msg)
-        send_wecom_message(f"【系统错误】{error_msg}")
+        send_wecom_message(f"【系统错误】{error_msg}")  # 错误消息也会添加固定末尾
         response = {
             "status": "error",
             "message": error_msg,

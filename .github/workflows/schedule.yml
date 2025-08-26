@@ -2,8 +2,8 @@ name: 每天9点36分推送新股申购信息
 
 on:
   schedule:
-    # 每个交易日 9:36 爬取并推送当天新股申购、新上市股票信息 (北京时间 UTC+8)
-    - cron: '36 1 * * 1-5' # UTC 1:36 = 北京时间 9:36
+    # 每个交易日 9:36 爬取并推送（UTC 1:36 = 北京时间 9:36）
+    - cron: '36 1 * * 1-5'
 
   # 允许手动触发
   workflow_dispatch:
@@ -13,12 +13,12 @@ on:
         required: true
         type: choice
         options:
-          - 'push_new_stock'				#推送新股申购和新上市股票信息  
+          - 'push_new_stock'  # 推送新股申购和新上市股票信息  
 
 jobs:
-  # 9:36 AM：推送新股申购和新上市股票信息
   push_new_stock:
-    if: ${{ (github.event_name == 'schedule' && contains(github.event.schedule, '36 1 * * 1-5')) }}
+    # 修复条件：允许定时任务触发，或手动选择push_new_stock时触发
+    if: ${{ (github.event_name == 'schedule') || (github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'push_new_stock') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -45,29 +45,28 @@ jobs:
           pip install -r requirements.txt
           pip install akshare baostock
 
-      - name: Debug info
+      - name: Debug info (帮助排查问题)
         run: |
-          echo "Event schedule: ${{ github.event.schedule }}"
-          echo "Event name: ${{ github.event_name }}"
-          echo "Input task: ${{ github.event.inputs.task }}"
+          echo "事件名称: ${{ github.event_name }}"
+          echo "定时表达式: ${{ github.event.schedule || '无' }}"
+          echo "手动任务选择: ${{ github.event.inputs.task || '无' }}"
+          echo "当前UTC时间: $(date '+%Y-%m-%d %H:%M')"
+          echo "当前北京时间: $(date -u -d "+8 hours" '+%Y-%m-%d %H:%M')"
       
       - name: Run strategy
         env:
           TASK: 'push_new_stock'
           WECOM_WEBHOOK: ${{ secrets.WECOM_WEBHOOK }}
         run: |
-          # 执行主程序
-          echo "当前北京时间: $(date -u -d "+8 hours" '+%Y-%m-%d %H:%M')"
           python main.py
           
-          # 提交数据变更到仓库
+          # 提交数据变更
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
           git add data/
-          git commit -m "定时任务：推送新股信息 $(date +'%Y-%m-%d %H:%M')" || echo "更新失败：没有新股信息"
-          git push origin main || echo "Failed to push changes"
+          git commit -m "定时任务：推送新股信息 $(date +'%Y-%m-%d %H:%M')" || echo "无新股信息更新"
+          git push origin main || echo "推送变更失败"
 
       - name: Verify execution
         run: |
           echo "北京时间9点36分推送新股信息到微信任务完成!"
-

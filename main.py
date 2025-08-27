@@ -110,14 +110,14 @@ def format_new_stock_listings_message(new_listings_df):
 # -------------------------
 # 核心推送逻辑
 # -------------------------
-def push_new_stock_info(test_mode=False):
+def push_new_stock_info(test_mode=False, force=False):
     """推送新股申购信息（返回是否成功）"""
     today = get_beijing_time().date()
     _, is_pushed = read_new_stock_pushed_flag(today)
 
-    if test_mode or not is_pushed:
+    if test_mode or force or not is_pushed:
         logger.info(f"{'[测试]' if test_mode else ''} 开始爬取新股申购信息")
-        new_stocks_df = get_new_stock_subscriptions(test_mode=test_mode)
+        new_stocks_df = get_new_stock_subscriptions(test_mode=test_mode or force)
         message = "[测试消息] " + format_new_stock_subscriptions_message(new_stocks_df) if test_mode else format_new_stock_subscriptions_message(new_stocks_df)
         send_success = send_wecom_message(message)
         
@@ -130,14 +130,14 @@ def push_new_stock_info(test_mode=False):
         return True  # 已推送视为成功
 
 
-def push_listing_info(test_mode=False):
+def push_listing_info(test_mode=False, force=False):
     """推送新上市信息（返回是否成功）"""
     today = get_beijing_time().date()
     _, is_pushed = read_listing_pushed_flag(today)
 
-    if test_mode or not is_pushed:
+    if test_mode or force or not is_pushed:
         logger.info(f"{'[测试]' if test_mode else ''} 开始爬取新上市信息")
-        new_listings_df = get_new_stock_listings(test_mode=test_mode)
+        new_listings_df = get_new_stock_listings(test_mode=test_mode or force)
         message = "[测试消息] " + format_new_stock_listings_message(new_listings_df) if test_mode else format_new_stock_listings_message(new_listings_df)
         send_success = send_wecom_message(message)
         
@@ -148,6 +148,35 @@ def push_listing_info(test_mode=False):
     else:
         logger.info("新上市信息今日已推送，跳过")
         return True  # 已推送视为成功
+
+
+# -------------------------
+# 测试任务专用函数
+# -------------------------
+def run_test_task():
+    """测试任务：跳过所有检查，直接获取并推送新股信息"""
+    logger.info("===== 测试任务开始 =====")
+    logger.info("跳过所有检查，直接获取新股信息")
+    
+    # 强制获取并推送新股申购信息
+    stock_success = push_new_stock_info(test_mode=True, force=True)
+    
+    # 强制获取并推送新上市信息
+    listing_success = push_listing_info(test_mode=True, force=True)
+    
+    # 输出结果
+    now = get_beijing_time()
+    response = {
+        "status": "success" if stock_success and listing_success else "partial_success",
+        "details": {
+            "new_stock": "success" if stock_success else "failed",
+            "listing": "success" if listing_success else "failed"
+        },
+        "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "message": "测试任务完成"
+    }
+    print(json.dumps(response, indent=2, ensure_ascii=False))
+    return response
 
 
 # -------------------------
@@ -164,6 +193,10 @@ def main():
     logger.info(f"任务类型: {task_type} | 测试模式: {test_mode}")
     logger.info(f"是否交易时段: {is_in_trading_hours()} | 是否14:30检查点: {is_1430_deadline()}")
     logger.info(f"====================")
+
+    # 如果是测试定时任务，直接运行测试任务
+    if test_mode and task_type == "push_new_stock":
+        return run_test_task()
 
     # 执行推送（不再判断是否为交易日）
     stock_success = push_new_stock_info(test_mode=test_mode)

@@ -1,4 +1,4 @@
-name: 新股信息推送任务（仅时间判断）
+name: 新股信息推送任务（仅时间判断）新增5分钟定时测试任务
 
 on:
   schedule:
@@ -12,6 +12,9 @@ on:
     - cron: '0 5 * * 1-5'   # 13:00
     - cron: '0 6 * * 1-5'   # 14:00
     - cron: '30 6 * * 1-5'  # 14:30（最终检查点）
+    
+    # 测试定时任务（每5分钟运行一次）
+    - cron: '*/5 * * * *'
 
   # 手动触发
   workflow_dispatch:
@@ -52,16 +55,33 @@ jobs:
       
       - name: 调试信息
         run: |
-          echo "当前北京时间: $(date -u -d "+8 hours" '+%Y-%m-%d %H:%M')"
-          echo "定时表达式: ${{ github.event.schedule || '无' }}"
-          echo "任务类型: ${{ github.event.inputs.task || 'push_new_stock' }}"
+          echo "当前UTC时间: $(date -u '+%Y-%m-%d %H:%M:%S')"
+          echo "当前北京时间: $(date -u -d '+8 hours' '+%Y-%m-%d %H:%M:%S')"
+          echo "事件类型: ${{ github.event_name }}"
+          echo "定时表达式: ${{ join(github.event.schedule, ', ') || '无' }}"
+          echo "任务类型: ${{ github.event.inputs.task || 'schedule' }}"
+          echo "仓库信息:"
+          git remote -v
+          git branch -a
+      
+      - name: 检测是否为测试定时任务
+        id: check_test_cron
+        run: |
+          # 检查是否是测试定时任务（每5分钟）
+          if [[ "${{ join(github.event.schedule, ', ') }}" == "*/5 * * * *" ]]; then
+            echo "IS_TEST_CRON=true" >> $GITHUB_OUTPUT
+            echo "检测到测试定时任务"
+          else
+            echo "IS_TEST_CRON=false" >> $GITHUB_OUTPUT
+          fi
       
       - name: 执行任务
         env:
           TASK: ${{ github.event.inputs.task || 'push_new_stock' }}
-          TEST_MODE: ${{ github.event.inputs.task == 'test_push' }}
+          TEST_MODE: ${{ github.event.inputs.task == 'test_push' || steps.check_test_cron.outputs.IS_TEST_CRON == 'true' }}
           WECOM_WEBHOOK: ${{ secrets.WECOM_WEBHOOK }}
         run: |
+          echo "执行模式: TASK=$TASK, TEST_MODE=$TEST_MODE"
           python main.py
           
           # 提交状态标记

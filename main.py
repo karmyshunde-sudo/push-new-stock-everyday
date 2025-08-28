@@ -88,7 +88,6 @@ def format_new_stock_subscriptions_message(new_stocks_df):
    • 申购上限：{stock['申购上限']}
    • 申购日期：{stock['申购日期']}
 """
-    message += "\n温馨提示：请确认申购资格后操作，投资有风险～"
     return message
 
 
@@ -103,7 +102,6 @@ def format_new_stock_listings_message(new_listings_df):
    • 发行价格：{stock['发行价格']}元
    • 上市日期：{stock['上市日期']}
 """
-    message += "\n温馨提示：新上市股票波动较大，请注意风险～"
     return message
 
 
